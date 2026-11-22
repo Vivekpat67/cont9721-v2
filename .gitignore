@@ -1,0 +1,44 @@
+# --- run data: contains API responses, personal data about directors and spend; never commit
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+case_files/
+outbox/
+output/
+quotes/
+demo_build/
+*.local.toml
+# recorded live API responses (third-party / personal data) - replay fixtures stay private
+fixtures/*.live.json
+
+# --- secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# --- internal hand-off / review notes (not part of the product; delete a line to publish it)
+HANDOFF.md
+PROJECT_REPORT.md
+
+# --- Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

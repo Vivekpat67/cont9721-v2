@@ -1,0 +1,117 @@
+# contractor-check configuration. Every value can be overridden with --config <file>.
+
+[paths]
+db = "contractor_check.db"
+case_files = "case_files"
+outbox = "outbox"
+
+[limits]
+credit_cap = 25.0            # Crustdata credits per run (cumulative across resumes)
+deadline_seconds = 900       # wall-clock budget per invocation; exceeded -> abort to HOLD
+http_timeout_seconds = 45
+max_retries = 2              # retries after the first attempt (so 3 attempts total)
+backoff_base_seconds = 2.0
+
+[crustdata]
+base_url = "https://api.crustdata.com"
+api_version = "2025-11-01"
+api_key_env = "CRUSTDATA_API_KEY"   # read from the environment only; never written, logged or printed
+# When a response has no x-credits-used header: "reserve" charges the estimate below against the cap
+# (marked as estimated); "stop" also aborts the run (HOLD). Never recorded as zero.
+on_missing_usage = "reserve"
+
+# Worst-case credit estimates used to refuse a call *before* it would break the cap.
+# Actual spend is read from the X-Credits-Used response header.
+[crustdata.estimate]
+"/company/identify" = 0.2
+"/company/enrich" = 3.0
+"/person/search" = 0.35      # per result requested (limit)
+"/person/enrich" = 1.0       # per profile URL
+"/web/search/live" = 1.0     # per page
+"/web/enrich/live" = 1.0     # per URL
+
+# Pacing per endpoint (requests per minute) for this API key. No /batch endpoints are used.
+[crustdata.rpm]
+"/company/identify" = 5
+"/company/enrich" = 5
+"/person/search" = 5
+"/person/enrich" = 5
+"/web/search/live" = 10
+"/web/enrich/live" = 10
+
+# Source order per check: SQLite cache -> free public sources -> Crustdata on a miss.
+# A successful response from ANY earlier run younger than this is reused at 0 credits.
+[cache.ttl_days]
+"/company/identify" = 30
+"/company/enrich" = 7
+"/person/search" = 7
+"/person/enrich" = 7
+"/web/search/live" = 1
+"/web/enrich/live" = 7
+http = 1
+
+[debarment_index]
+# Built by `python -m contractor_check index` with debarment_crawler.py (MoRTH + NHIDCL).
+crawler_path = "."                 # folder holding debarment_crawler.py (relative to this config file)
+max_age_days = 7                   # older (or empty) index -> the debarment check is UNVERIFIED
+required_sources = ["MoRTH", "NHIDCL"]
+max_pages = 30
+morth_per_page = 50
+request_delay_seconds = 1.0
+request_attempts = 2               # free plain-request attempts per URL before it counts as a miss
+use_os_trust_store = true          # verify TLS with the Windows/macOS trust store (needs `truststore`); fixes nhidcl.com's incomplete chain
+use_crustdata_fallback = true      # blocked pages fall back to /web/enrich/live via the shared wrapper
+human_mode = false
+strong_requires_all_tokens = true
+possible_ratio_min = 0.80          # fuzzy ratio band for a "possible" match
+possible_ratio_max = 0.92
+
+[people]
+search_limit = 25                  # /person/search page size (current employer filter)
+search_max_pages = 2               # pages to scan (all filters together) while directors remain unmatched
+# First search narrows the employer filter by current title (documented field), then employer-only as fallback.
+leadership_titles = ["director", "chairman", "managing", "founder", "partner", "proprietor", "promoter", "ceo", "owner"]
+name_match_min = 90                # token-sort ratio for a local director-name match
+
+[rules]
+age_claim_tolerance_years = 2          # claimed experience may exceed company age by this much
+# Professional-network headcount excludes site labour, so this is deliberately loose:
+# flag when contract value per listed employee exceeds this (INR).
+max_contract_inr_per_listed_employee = 15000000   # 1.5 crore
+min_listed_headcount_for_large_contract = 10
+large_contract_inr = 50000000                      # 5 crore
+director_match_min_score = 70                      # 0-100 disambiguation score
+director_match_min_margin = 10                     # over the runner-up candidate
+
+# Crustdata news search only; each article naming the subject is listed for MANUAL review.
+[adverse_news]
+max_articles_per_subject = 10        # articles listed per subject for MANUAL review; more -> 'coverage truncated' (HOLD)
+# Searches use the quoted NAME only: live test 2026-11-22 showed any added keyword returns 0 results.
+# A search with no articles is a HOLD by default (it cannot distinguish "nothing published" from a search gap).
+zero_results_hold = true
+
+[crawler]
+# Your own crawler for government / public pages. When enabled it is tried FIRST (0 credits)
+# and Crustdata /web/enrich/live is used only for URLs the crawler fails on.
+enabled = false
+python_path = ""            # folder that contains the crawler package/module
+callable = ""               # "module:function"; called as function(url) -> str | bytes | dict(content/html/text, status)
+command = ""                # alternative to callable: command with {url}; stdout is the page
+route_domains = ["gov.in", "nic.in", "data.opensanctions.org"]   # public-list fetches go via the crawler
+timeout_seconds = 60
+
+[debarment]
+# One configured public list. Default: World Bank debarred firms & individuals, via the
+# OpenSanctions mirror (CC BY-NC 4.0 -- commercial use needs an OpenSanctions licence;
+# swap in another list if that matters to you).
+name = "World Bank Listing of Ineligible Firms and Individuals (OpenSanctions mirror)"
+url = "https://data.opensanctions.org/datasets/latest/worldbank_debarred/targets.simple.csv"
+format = "csv"
+name_column = "name"
+alias_column = "aliases"
+alias_separator = ";"
+country_column = "countries"
+detail_columns = ["sanctions", "addresses", "last_change"]
+record_date_column = "last_change"
+strong_match_score = 95
+possible_match_score = 87
