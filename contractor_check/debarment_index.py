@@ -349,11 +349,55 @@ def add_months(d: date, months: int) -> date:
     return date(y, m, min(d.day, monthrange(y, m)[1]))
 
 
+_SOURCE_DATE_FORMATS = ("%d.%m.%Y", "%d-%m-%Y", "%d/%m/%Y", "%d.%m.%y", "%d-%m-%y", "%d %B %Y", "%d %b %Y")  # = crawler's
+_DRUPAL_DATE = re.compile(r"^\s*(mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+(\d{1,2})/(\d{1,2})/(\d{4})\b", re.I)
+
+
+def parse_source_date(text: str | None) -> date | None:
+    """A date as the sources publish it, or None when absent, unclear or impossible:
+    ISO 'YYYY-MM-DD' (what the crawler stores); the crawler's day-first formats ('18.02.2019', '18-02-2019',
+    '18/02/2019', '18 February 2019'); and NHIDCL's Drupal 'Thu, 10/15/2026 - 12:00', which is month-first - its
+    weekday must agree with the date, so '10/11/2026' style ambiguity is settled by the weekday or rejected."""
+    s = (text or "").strip()
+    if not s:
+        return None
+    m = _DRUPAL_DATE.match(s)
+    if m:
+        a, b, y = int(m.group(2)), int(m.group(3)), int(m.group(4))
+        for mo, dy in ((a, b), (b, a)):
+            try:
+                d = date(y, mo, dy)
+            except ValueError:
+                continue
+            if d.strftime("%a").lower() == m.group(1).lower()[:3]:
+                return d
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        try:
+            return date.fromisoformat(s)
+        except ValueError:
+            return None
+    for fmt in _SOURCE_DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def debarment_status(rec: dict, today: date | None = None) -> dict:
     today = today or datetime.now(timezone.utc).date()
     wd = (rec.get("withdrawal_date") or "").strip()
     if wd.lower() not in _EMPTY:
-        return {"status": "WITHDRAWN", "withdrawal_date": wd, "withdrawal_document_url": rec.get("withdrawal_document_url")}
+        wdate = parse_source_date(wd)
+        if wdate and wdate <= today:
+            return {"status": "WITHDRAWN", "withdrawal_date": wdate.isoformat(), "withdrawal_date_listed": wd,
+                    "withdrawal_document_url": rec.get("withdrawal_document_url")}
+        # an unclear, impossible or future withdrawal never clears a finding: a person reads the order
+        return {"status": "UNKNOWN", "start": rec.get("date") or None, "duration_months": None, "end": None,
+                "withdrawal_document_url": rec.get("withdrawal_document_url"),
+                "note": f"withdrawal date '{wd}' " + ("is in the future" if wdate else "is not a valid date")
+                        + "; the debarment is not treated as withdrawn"}
     if is_revocation(rec.get("title")):
         # MoRTH has no withdrawal column: it publishes revocations as separate orders. This entry lifts some
         # debarment, not necessarily the one we matched, so it is a HOLD for review, never info-only.
@@ -367,6 +411,9 @@ def debarment_status(rec: dict, today: date | None = None) -> dict:
         except ValueError:
             start = None
     if start and months:
+        if start > today:   # a ban that has not started is not ACTIVE today
+            return {"status": "UNKNOWN", "start": start.isoformat(), "duration_months": months, "end": None,
+                    "note": f"ban starts {start.isoformat()}, in the future; not active today"}
         end = add_months(start, months)
         return {"status": "EXPIRED" if end < today else "ACTIVE", "start": start.isoformat(),
                 "duration_months": months, "end": end.isoformat()}

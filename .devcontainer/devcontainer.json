@@ -1,0 +1,17 @@
+{
+  "name": "contractor-check",
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.11-bookworm",
+  "postCreateCommand": "python -m pip install -e '.[test]'",
+  "forwardPorts": [8787],
+  "portsAttributes": {
+    "8787": { "label": "Contractor Check web", "onAutoForward": "openBrowser" }
+  },
+  "secrets": {
+    "CRUSTDATA_API_KEY": {
+      "description": "Crustdata API key. Stored by GitHub as a Codespaces secret; never committed or shown in the page."
+    },
+    "CC_ACCESS_CODE": {
+      "description": "Access code (8+ characters) anyone must enter in the web page before a paid check runs."
+    }
+  }
+}

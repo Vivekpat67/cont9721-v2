@@ -57,7 +57,7 @@ def parse_inr(text: str | None) -> float | None:
         return None
     t = re.sub(r"₹|\brs\b\.?|\binr\b", " ", text.lower())
     m = re.search(r"(\d[\d,]*(?:\.\d+)?)\s*([a-z]+)?", t)
-    if not m:
+    if not m or t[:m.start()].rstrip().endswith("-"):   # "-5 crore" is not +5 crore
         return None
     num = float(m.group(1).replace(",", ""))
     unit = (m.group(2) or "").strip(".")

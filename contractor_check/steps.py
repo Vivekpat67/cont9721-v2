@@ -49,6 +49,63 @@ def _first_matches(res: CallResult) -> list[dict]:
 
 
 # =========================================================================== parse_quote
+_TEXT_KEYS = ("firm_name", "firm", "company", "company_name", "name", "website", "url", "domain", "work_package",
+              "scope", "package", "city", "location", "gstin", "cin", "quote_date", "date", "email", "contract_value_text")
+_DIRECTOR_KEYS = ("directors", "director_names", "partners", "promoters")
+_VALUE_KEYS = ("contract_value_inr", "contract_value", "value_inr", "quote_value")
+_YEARS_KEYS = ("claimed_years_experience", "years_experience", "experience_years")
+
+
+def validate_quote(d: Any) -> list[str]:
+    """Shape and range checks on the raw quote, before any paid call. [] means usable.
+    A MISSING field is not a problem here (it HOLDs later); a wrong type or an impossible number is: a contract value
+    must be a positive finite amount, experience a finite non-negative number, booleans are never numbers, and every
+    director must be a name (text) or {"name": text, "role": text or null}."""
+    import math
+
+    if not isinstance(d, dict):
+        return [f"the quote must be a JSON object, not {type(d).__name__}"]
+    probs = []
+    for k in _TEXT_KEYS:
+        if d.get(k) is not None and not isinstance(d[k], str):
+            probs.append(f"{k} must be text, not {type(d[k]).__name__}")
+    for k in _DIRECTOR_KEYS:
+        v = d.get(k)
+        if v in (None, "", []):
+            continue
+        if not isinstance(v, list):
+            probs.append(f"{k} must be a list of names, not {type(v).__name__}")
+            continue
+        for i, x in enumerate(v):
+            ok = (isinstance(x, str) and x.strip()) or (
+                isinstance(x, dict) and isinstance(x.get("name"), str) and x["name"].strip()
+                and (x.get("role") is None or isinstance(x["role"], str)))
+            if not ok:
+                probs.append(f"{k}[{i}] must be a name or {{\"name\": text, \"role\": text}}, got {x!r}"[:160])
+
+    def number(k: str, v: Any, positive: bool) -> None:
+        if v is None or v == "":
+            return
+        if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+            probs.append(f"{k} must be a number, not {type(v).__name__}")
+            return
+        if isinstance(v, str):
+            try:
+                n = parse_inr(v) if positive else float(v.strip())
+            except ValueError:
+                n = None
+        else:
+            n = float(v)
+        if n is None or not math.isfinite(n) or (n <= 0 if positive else n < 0):
+            probs.append(f"{k} must be a {'positive' if positive else 'non-negative'} finite number, got {v!r}")
+
+    for k in _VALUE_KEYS:
+        number(k, d.get(k), positive=True)
+    for k in _YEARS_KEYS:
+        number(k, d.get(k), positive=False)
+    return probs
+
+
 def _normalise_json_quote(d: dict) -> dict:
     def pick(*keys):
         for k in keys:
@@ -96,7 +153,15 @@ def parse_quote(ctx: Ctx) -> Outcome:
                         fetched_via="quote")
         return Outcome(status="unverified", output={"reason": "free-text quote refused"},
                        error="free-text quote: provide structured JSON fields")
-    q = _normalise_json_quote(json.loads(raw))
+    obj = json.loads(raw)
+    problems = validate_quote(obj)
+    if problems:   # malformed input: refuse every downstream (paid) step; the recommendation becomes HOLD
+        for pr in problems:
+            ctx.cant_verify("the quote", f"valid input: {pr}", subject="quote", source_url="quote (run input)",
+                            fetched_via="quote")
+        return Outcome(status="unverified", output={"reason": "invalid quote", "problems": problems},
+                       error="invalid quote: " + "; ".join(problems))
+    q = _normalise_json_quote(obj)
     via = "structured fields (JSON / form)"
     unsupported: list[str] = []
     domain = domain_of(q.get("website"))

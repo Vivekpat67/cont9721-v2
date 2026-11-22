@@ -281,6 +281,10 @@ def main(argv: list[str] | None = None) -> int:
         if kind != "json":
             print(TEXT_REFUSED, file=sys.stderr)
             return 2
+        problems = _steps.validate_quote(json.loads(raw))
+        if problems:
+            print("invalid quote, nothing run or charged:\n  - " + "\n  - ".join(problems), file=sys.stderr)
+            return 2
         run_id = run_id_ = db.create_run(raw, kind, args.credit_cap if args.credit_cap is not None else cfg["limits"]["credit_cap"],
                                          args.deadline if args.deadline is not None else cfg["limits"]["deadline_seconds"])
         print(f"run_id: {run_id}" + ("  (REPLAY MODE: recorded responses only, no live calls)" if replay is not None else ""))

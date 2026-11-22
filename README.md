@@ -34,6 +34,31 @@ python -m contractor_check --run-id <run_id> --status
   `contractor-check export-replay --run-id <id> --out fixtures/x.live.json`, then
   `contractor-check quote.json --replay fixtures/x.live.json`.
 
+## Run it online (GitHub Codespaces)
+
+The web front end (`scripts/serve_web.py`) runs the same pipeline as the CLI. It's a form in, a live case file out.
+
+1. On GitHub: **Code → Codespaces → Create codespace** on this branch. GitHub asks for two secrets, which it stores
+   as Codespaces secrets (server-side, never in the repo):
+   - `CRUSTDATA_API_KEY`;
+   - `CC_ACCESS_CODE`, an 8+ character code that must be typed in the page before any paid check runs.
+2. In the codespace terminal:
+   ```bash
+   python -m contractor_check index --no-crustdata   # free: build the MoRTH/NHIDCL debarment index (~3 min)
+   python scripts/serve_web.py                       # per check <=12 credits, <=30 per day (flags to change)
+   ```
+3. Open the forwarded port **8787** (Ports tab). Leave it **private** (only you, signed in to GitHub), or set it to
+   *public* to share it. The access code still protects the credits either way.
+
+Safety:
+- one check at a time;
+- input validated before anything is charged;
+- the key never reaches the browser;
+- REJECT is never finalised from the web (that needs `contractor-check --run-id` at a terminal);
+- news articles are reviewed with `contractor-check review`.
+
+The codespace stops when idle; the database lives inside it.
+
 ## Pipeline
 
 `parse_quote → identify_company → enrich_company → check_age_vs_claim → check_headcount_vs_contract → find_directors →
