@@ -81,6 +81,10 @@ def evaluate(steps: dict[str, tuple[str, dict, str | None]], run: dict[str, Any]
     if hc.get("result") == "thin":
         reasons.append(_r("thin_headcount", "hold", "check_headcount_vs_contract",
                           f"Listed headcount {hc['headcount']} is thin for the contract value."))
+    elif hc.get("result") == "inconsistent":
+        reasons.append(_r("headcount_inconsistent", "hold", "check_headcount_vs_contract",
+                          f"Crustdata's headcount fields disagree (total {hc['headcount']} vs range "
+                          f"'{hc['employee_count_range']}'); capacity not judged."))
     elif hc.get("result") in ("unknown", "no_value"):
         reasons.append(_r("capacity_unverifiable", "hold", "check_headcount_vs_contract", "Headcount vs contract could not be checked."))
 

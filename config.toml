@@ -80,6 +80,9 @@ age_claim_tolerance_years = 2          # claimed experience may exceed company a
 max_contract_inr_per_listed_employee = 15000000   # 1.5 crore
 min_listed_headcount_for_large_contract = 10
 large_contract_inr = 50000000                      # 5 crore
+# headcount.total counts profiles, so it is usually BELOW the firm's stated employee_count_range. Treat the two as
+# contradicting (HOLD, capacity not judged) only if the total is above the range or under this share of its lower bound.
+headcount_min_share_of_range = 0.25
 director_match_min_score = 70                      # 0-100 disambiguation score
 director_match_min_margin = 10                     # over the runner-up candidate
 

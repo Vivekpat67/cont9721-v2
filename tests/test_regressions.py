@@ -518,3 +518,61 @@ def test_redirect_links_are_labelled_not_stripped(tmp_path):
     assert "stated destination https://publisher.example/a - decoded from the link, not fetched" in ev[QURL]["note"]
     assert not ev["https://news.example/c"]["note"].startswith("[")
     assert verdict(ctx)["verdict"] == "HOLD"                             # still pending manual review
+
+
+# ================================================================== 10. one finding per listing across firm-name variants
+def test_name_variants_do_not_duplicate_debarment_findings(tmp_path):
+    """Quote says '... Ltd', Crustdata says '... Limited': both spellings match the same listings, which must be
+    reported once each (strongest match, both spellings recorded), not once per spelling."""
+    from test_debarment_index import ACTIVE, EXPIRED, filler
+    q = json.loads(QUOTE_JSON)
+    q["firm_name"] = "Ahluwalia Contracts (India) Ltd"            # differs from the identified name FIRM
+    wb = '"x2","Company","AHLUWALIA CONTRACTS (INDIA) LIMITED","","","in","","","Debarment - 2025-06-01 - 2999-12-31","","","","WB","2025","2026","2025-06-01"\n'
+    ctx, _ = make(tmp_path, quote=json.dumps(q), seed=False, csv_text=CSV_HEADER + CSV_ROWS + wb)
+    seed_index(ctx.db, rows=filler() + [ACTIVE, EXPIRED])
+    run_pipeline(ctx, **QUIET)
+    [firm] = [r for r in ctx.out("debarment_index")["results"] if r["subject"] == "firm"]
+    assert firm["names"] == ["Ahluwalia Contracts (India) Ltd", FIRM]
+    assert sorted(m["record_id"] for m in firm["matches"]) == sorted([ACTIVE["record_id"], EXPIRED["record_id"]])
+    assert all(set(m["matched_names"]) == set(firm["names"]) for m in firm["matches"])
+    assert codes(ctx, "debarment_index").count("debarment_active") == 1
+    assert codes(ctx, "debarment_index").count("debarment_expired") == 1
+    assert codes(ctx, "debarment_list").count("debarment_match") == 1
+    ev = [e for e in ctx.db.evidence_rows(ctx.run_id) if e["step"] == "debarment_index" and e["subject"] == "firm"]
+    assert len(ev) == 2 and all("Ltd / " in e["claim"] for e in ev)
+
+
+# ================================================================== 11. contradictory headcount fields are not "verified"
+@pytest.mark.parametrize("total, rng, expect", [
+    (27, "1001-5000", "inconsistent"),     # live S&P case: 2.7% of the lower bound
+    (2880, "5001-10000", "consistent"),    # live ACIL case: profiles undercount the firm's own size band - normal
+    (200, "1001-5000", "inconsistent"),    # under a quarter of the lower bound
+    (3200, "1001-5000", "consistent"),     # inside the range
+    (9000, "1001-5000", "inconsistent"),   # above the range
+    (20000, "10001+", "consistent"),       # open-ended range
+    (3200, "", "consistent"),              # no range: nothing to compare
+])
+def test_headcount_total_outside_stated_range_holds(tmp_path, total, rng, expect):
+    crust = Crust()
+    orig = crust.handler
+
+    def h(req):
+        r = orig(req)
+        if req.url.path == "/company/enrich":
+            body = r.json()
+            cd = body[0]["matches"][0]["company_data"]
+            cd["headcount"]["total"] = total
+            cd["basic_info"]["employee_count_range"] = rng
+            return httpx.Response(200, headers={"x-credits-used": "1"}, json=body)
+        return r
+    crust.handler = h
+    ctx, _ = make(tmp_path, crust)
+    run_pipeline(ctx, **QUIET)
+    out = ctx.out("check_headcount_vs_contract")
+    assert out["result"] == expect
+    if expect == "inconsistent":
+        assert "headcount_inconsistent" in codes(ctx) and verdict(ctx)["verdict"] == "HOLD"
+        [e] = [e for e in ctx.db.evidence_rows(ctx.run_id) if e["step"] == "check_headcount_vs_contract"]
+        assert e["status"] == "flag" and "disagree" in e["claim"]
+    else:
+        assert "headcount_inconsistent" not in codes(ctx)

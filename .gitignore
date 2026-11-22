@@ -23,6 +23,7 @@ HANDOFF.md
 PROJECT_REPORT.md
 HANDOVER.md
 REQUIREMENTS.md
+SESSION_CHANGES_*.md
 
 # --- Python
 __pycache__/

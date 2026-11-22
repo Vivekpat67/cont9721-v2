@@ -9,7 +9,9 @@ and is never counted as clean.
   articles are reviewed by a person.
 - Professional-network profiles and headcount are **limited evidence**, not proof of directorship or delivery capacity.
 
-> Status: early. 123 offline tests pass. Live runs on 2026-11-22 spent 9.56 Crustdata credits in total.
+> Status: early. 145 offline tests pass. Live runs on 2026-11-22 spent 22.67 Crustdata credits in total, across two
+> example firms: Ahluwalia Contracts (HOLD) and S&P Infrastructure Developers (rules propose REJECT for an active MoRTH
+> debarment, held until a person approves).
 
 ## Quick start
 
@@ -72,6 +74,13 @@ as "unvisited" instead of dropping them, and records coverage for every listing.
 - `*.db`, `case_files/`, `outbox/`, `quotes/`, `demo_build/` and `fixtures/*.live.json` hold API data about named
   people and are **git-ignored**.
 - A test sets a dummy key, runs the CLI, and checks the key appears in no output, database row or case file.
+
+## Demo pages
+
+`python scripts/build_demo.py --run-id <replay run>` builds a static, **read-only** page from a replay run. It shows
+the recorded inputs and case file, labelled REPLAYED, and cannot check a different quote. A REJECT proposal awaiting
+approval is shown as such, never hidden behind HOLD. News links that are opaque google.com redirects are kept exactly
+as recorded and labelled "publisher destination not verified".
 
 ## Known gaps
 

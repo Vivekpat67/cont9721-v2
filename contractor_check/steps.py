@@ -342,6 +342,19 @@ def check_headcount_vs_contract(ctx: Ctx) -> Outcome:
     if not hc:
         ctx.cant_verify(f"whether the firm can deliver a {fmt_inr(value)} package", "any headcount figure", **cite)
         return Outcome(output={"result": "unknown", "contract_value_inr": value})
+    # Crustdata's own fields can contradict each other (live: S&P headcount.total 27 vs range 1001-5000).
+    # Then neither number can be relied on, so the capacity check is not judged at all: HOLD, never "verified".
+    # A total somewhat BELOW the range is normal (it counts profiles; the range is the firm's own size band - live
+    # ACIL: 2,880 vs 5001-10000), so only a total above the range or far below it counts as a contradiction.
+    bounds = _range_bounds(comp.get("employee_count_range"))
+    min_share = float(r.get("headcount_min_share_of_range", 0.25))
+    if basis == "headcount.total" and bounds and (hc < bounds[0] * min_share or (bounds[1] is not None and hc > bounds[1])):
+        rng = comp["employee_count_range"]
+        ctx.ev(f"Crustdata's headcount fields disagree: headcount.total {hc} vs employee_count_range '{rng}'. "
+               f"Capacity for a {fmt_inr(value)} package is not judged ({LIMITED_HEADCOUNT})", "flag",
+               value={"headcount_total": hc, "employee_count_range": rng, "contract_value_inr": value}, **cite)
+        return Outcome(output={"result": "inconsistent", "headcount": hc, "employee_count_range": rng,
+                               "contract_value_inr": value})
     per = value / hc
     reasons = []
     if per > r["max_contract_inr_per_listed_employee"]:
@@ -360,6 +373,18 @@ def check_headcount_vs_contract(ctx: Ctx) -> Outcome:
                value={"headcount": hc, "per_employee": per}, **cite)
         result = "consistent"
     return Outcome(output={"result": result, "headcount": hc, "basis": basis, "contract_value_inr": value, "per_employee": per})
+
+
+def _range_bounds(rng: Any) -> tuple[int, int | None] | None:
+    """'1001-5000' -> (1001, 5000); '10001+' -> (10001, None); anything else -> None (no check)."""
+    import re
+
+    m = re.fullmatch(r"\s*(\d[\d,]*)\s*(?:-\s*(\d[\d,]*)|\+)\s*", str(rng or ""))
+    if not m:
+        return None
+    lo = int(m.group(1).replace(",", ""))
+    hi = int(m.group(2).replace(",", "")) if m.group(2) else None
+    return (lo, hi) if hi is None or hi >= lo else None
 
 
 # =========================================================================== find_directors
@@ -750,16 +775,19 @@ def debarment_list(ctx: Ctx) -> Outcome:
                 entries.append({"norm": norm_person(n) if is_person else norm_name(n), "name": n, "row": r, "person": is_person})
 
     firm_names = list(dict.fromkeys(x for x in [q.get("firm_name"), (ident.get("basic_info") or {}).get("name")] if x))
-    subjects = [("firm", n, False) for n in firm_names] + [(f"director:{d['name']}", d["name"], True) for d in q.get("directors") or []]
+    # the firm is ONE subject however many spellings we hold: each listed entity is reported once
+    subjects = ([("firm", firm_names, False)] if firm_names else []) + \
+               [(f"director:{d['name']}", [d["name"]], True) for d in q.get("directors") or []]
     has_schema = "schema" in (reader.fieldnames or [])
     results = []
-    for key, name, person in subjects:
+    for key, names, person in subjects:
         pool = [e for e in entries if (e["person"] == person) or not has_schema]
-        qn = norm_person(name) if person else norm_name(name)
-        hits = process.extract(qn, [e["norm"] for e in pool], scorer=fuzz.token_sort_ratio, limit=3)
-        best = []
-        for _, score, idx in hits:
-            if score >= dc["possible_match_score"]:
+        by_entity: dict = {}
+        for variant in names:
+            qn = norm_person(variant) if person else norm_name(variant)
+            for _, score, idx in process.extract(qn, [e["norm"] for e in pool], scorer=fuzz.token_sort_ratio, limit=3):
+                if score < dc["possible_match_score"]:
+                    continue
                 e = pool[idx]
                 countries = (e["row"].get(dc.get("country_column", "")) or "").lower()
                 strength = "strong" if score >= dc["strong_match_score"] else "possible"
@@ -767,13 +795,23 @@ def debarment_list(ctx: Ctx) -> Outcome:
                     strength = "possible"  # a name alone can't establish a person's identity
                 if not person and strength == "strong" and countries and "in" not in countries.replace(",", ";").split(";"):
                     strength = "possible"  # strong name match but the listed entity is not Indian
-                best.append({"listed_name": e["name"], "score": score, "strength": strength, "countries": countries,
-                             "details": {c: e["row"].get(c) for c in dc.get("detail_columns", [])}})
-        results.append({"subject": key, "name": name, "matches": best})
+                ent = e["row"].get("id") or e["row"].get(dc["name_column"]) or e["name"]
+                cand = {"listed_name": e["name"], "score": score, "strength": strength, "countries": countries,
+                        "matched_names": [variant], "details": {c: e["row"].get(c) for c in dc.get("detail_columns", [])}}
+                prev = by_entity.get(ent)
+                if prev is None or (cand["strength"] == "strong", cand["score"]) > (prev["strength"] == "strong", prev["score"]):
+                    if prev is not None:
+                        cand["matched_names"] = list(dict.fromkeys(prev["matched_names"] + [variant]))
+                    by_entity[ent] = cand
+                elif variant not in prev["matched_names"]:
+                    prev["matched_names"].append(variant)
+        best = sorted(by_entity.values(), key=lambda m: (m["strength"] != "strong", -m["score"]))
+        name = " / ".join(names)
+        results.append({"subject": key, "name": name, "names": names, "matches": best})
         if best:
             for m in best:
                 rd = m["details"].get(dc.get("record_date_column", "")) or list_date
-                ctx.ev(f"'{name}' resembles listed entry '{m['listed_name']}' on {dc['name']} ({m['score']:.0f}% similar, "
+                ctx.ev(f"'{' / '.join(m['matched_names'])}' resembles listed entry '{m['listed_name']}' on {dc['name']} ({m['score']:.0f}% similar, "
                        f"{m['strength']} match; countries: {m['countries'] or 'n/a'}; sanction: {m['details'].get('sanctions') or 'n/a'})",
                        "flag", subject=key, value=m, source_field=f"{dc['name_column']}/{dc.get('alias_column')}",
                        **{**base_cite, "record_date": f"entry last changed {rd}"})
@@ -803,20 +841,32 @@ def debarment_index(ctx: Ctx) -> Outcome:
         return Outcome(status="unverified", output={"index": st}, error="; ".join(st["problems"]))
 
     firm_names = list(dict.fromkeys(x for x in [q.get("firm_name"), (ident.get("basic_info") or {}).get("name")] if x))
-    subjects = [("firm", n, False) for n in firm_names] + \
-               [(f"director:{d['name']}", d["name"], True) for d in q.get("directors") or []]
+    # the firm is ONE subject however many spellings we hold (quote name, Crustdata name): every listing is
+    # reported once, with its strongest match and the spellings that matched it
+    subjects = ([("firm", firm_names, False)] if firm_names else []) + \
+               [(f"director:{d['name']}", [d["name"]], True) for d in q.get("directors") or []]
     rows = [dict(r) for r in ctx.db.debarment_rows()]
     results = []
-    for key, name, person in subjects:
-        found = []
-        for rec in rows:
-            m = di.match_record(name, rec, ctx.cfg, person=person, firm_names=firm_names)
-            if not m:
-                continue
-            stt = di.debarment_status(rec)
-            found.append({**m, **stt, **{k: rec.get(k) for k in (
-                "record_id", "source", "section", "title", "date", "date_raw", "duration", "entity_type", "entity_guess",
-                "document_url", "page_url", "withdrawal_document_url", "fetched_via", "retrieved_at")}})
+    for key, names, person in subjects:
+        by_record: dict = {}
+        for variant in names:
+            for rec in rows:
+                m = di.match_record(variant, rec, ctx.cfg, person=person, firm_names=firm_names)
+                if not m:
+                    continue
+                prev = by_record.get(rec["record_id"])
+                if prev is not None and (m["strength"] == "strong", m.get("score") or 0) <= \
+                        (prev["strength"] == "strong", prev.get("score") or 0):
+                    if variant not in prev["matched_names"]:
+                        prev["matched_names"].append(variant)
+                    continue
+                stt = di.debarment_status(rec)
+                by_record[rec["record_id"]] = {**m, **stt, "matched_names": list(dict.fromkeys(
+                    (prev["matched_names"] if prev else []) + [variant])), **{k: rec.get(k) for k in (
+                    "record_id", "source", "section", "title", "date", "date_raw", "duration", "entity_type",
+                    "entity_guess", "document_url", "page_url", "withdrawal_document_url", "fetched_via", "retrieved_at")}}
+        found = list(by_record.values())
+        name = " / ".join(names)
         # a strong revocation order dated on/after an ACTIVE debarment's start may have lifted it: HOLD, not REJECT
         revs = [m for m in found if m["status"] == "REVOKED" and m["strength"] == "strong"]
         for m in found:
@@ -825,12 +875,12 @@ def debarment_index(ctx: Ctx) -> Outcome:
                 if lifting:
                     m["possibly_revoked_by"] = lifting[0].get("document_url") or lifting[0].get("page_url")
         found.sort(key=lambda m: (m["strength"] != "strong", m["status"] != "ACTIVE"))
-        results.append({"subject": key, "name": name, "person": person, "matches": found})
+        results.append({"subject": key, "name": name, "names": names, "person": person, "matches": found})
         for m in found:
             cite = {"source_url": m.get("document_url") or m.get("page_url"), "source_field": m.get("section"),
                     "record_date": m.get("date") or m.get("date_raw") or "date not stated on the listing",
                     "retrieved_at": m.get("retrieved_at"), "fetched_via": f"index ({m.get('fetched_via')})"}
-            who = f"'{name}'" + (" (as a JV partner)" if m.get("jv_partner") else "")
+            who = f"'{' / '.join(m['matched_names'])}'" + (" (as a JV partner)" if m.get("jv_partner") else "")
             desc = f"{who} ~ {m['source']} listing \"{m['title'][:160]}\" [{m['strength']} match on {m['match_on']}"
             desc += f", score {m['score']:.2f}]" if m["strength"] == "possible" else "]"
             if m["status"] == "WITHDRAWN":
