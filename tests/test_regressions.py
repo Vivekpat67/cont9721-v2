@@ -455,3 +455,66 @@ def test_api_key_never_printed_or_persisted(tmp_path, monkeypatch, capsys):
     assert secret not in dump                                                     # ... nor stored
     for f in (tmp_path / "cf").glob("*.md"):
         assert secret not in f.read_text(encoding="utf-8")
+
+
+# ================================================================== 9. citations and news links (replay-viewer patch)
+def test_index_citations_name_the_snapshots_not_the_legacy_table(tmp_path):
+    ctx, _ = make(tmp_path)
+    run_pipeline(ctx, **QUIET)
+    rows = [dict(e) for e in ctx.db.evidence_rows(ctx.run_id)]
+    assert not any("SQLite table debarments" in (e["source_url"] or "") + (e["claim"] or "") for e in rows)
+    idx = [e for e in rows if e["step"] == "debarment_index"]
+    assert idx and all(e["status"] == "verified" for e in idx)
+    st = di.index_status(ctx.cfg, ctx.db)
+    first_done = min(v["finished_at"] for v in st["sources"].values())
+    for e in idx:
+        assert "debarment index snapshots MoRTH #" in e["source_url"] and "NHIDCL #" in e["source_url"]
+        assert "debarment_records" in e["source_url"]
+        assert "crawl finished" in e["record_date"] and "(complete)" in e["record_date"]
+        assert e["retrieved_at"] == first_done
+
+
+def test_unusable_index_citation_names_no_legacy_table(tmp_path):
+    ctx, _ = make(tmp_path, seed=False)
+    run_pipeline(ctx, **QUIET)
+    [e] = [dict(e) for e in ctx.db.evidence_rows(ctx.run_id) if e["step"] == "debarment_index"]
+    assert e["status"] == "unverified" and e["source_url"] == "debarment index (no snapshots)"
+    assert e["record_date"] == "no snapshots"
+
+
+GOTO = "https://www.google.com/goto?url=CAES0gIBxCJF1zILa_J6&gsessionid=D6pU_fh38dwG8"
+QURL = "https://www.google.com/url?q=https://publisher.example/a&sa=U"
+
+
+@pytest.mark.parametrize("url, kind", [
+    (GOTO, "redirect_unverified"),
+    (QURL, "redirect_decoded"),
+    ("https://www.google.com/url?q=https://www.google.com/other", "redirect_unverified"),
+    ("https://www.livehindustan.com/business/x.html", "publisher"),
+    ("https://example.com/goto?url=https://elsewhere.example/", "publisher"),
+])
+def test_news_link_classification(url, kind):
+    from contractor_check.steps import _news_link
+    link = _news_link(url)
+    assert link["kind"] == kind
+    if kind == "redirect_decoded":
+        assert link["publisher_url"] == "https://publisher.example/a" and "not fetched" in link["label"]
+    if kind == "redirect_unverified":
+        assert "publisher destination not verified" in link["label"]
+
+
+def test_redirect_links_are_labelled_not_stripped(tmp_path):
+    crust = Crust()
+    crust.news = {"Ahluwalia Contracts": [
+        {"source": "news", "title": "Ahluwalia Contracts order A", "url": GOTO, "snippet": "Ahluwalia Contracts", "position": 1},
+        {"source": "news", "title": "Ahluwalia Contracts order B", "url": QURL, "snippet": "Ahluwalia Contracts", "position": 2},
+        {"source": "news", "title": "Ahluwalia Contracts order C", "url": "https://news.example/c",
+         "snippet": "Ahluwalia Contracts", "position": 3}]}
+    ctx, _ = make(tmp_path, crust)
+    run_pipeline(ctx, **QUIET)
+    ev = {e["source_url"]: dict(e) for e in ctx.db.evidence_rows(ctx.run_id) if e["step"] == "adverse_news"}
+    assert GOTO in ev and QURL in ev                                     # original links kept exactly, incl. params
+    assert "publisher destination not verified" in ev[GOTO]["note"]
+    assert "stated destination https://publisher.example/a - decoded from the link, not fetched" in ev[QURL]["note"]
+    assert not ev["https://news.example/c"]["note"].startswith("[")
+    assert verdict(ctx)["verdict"] == "HOLD"                             # still pending manual review

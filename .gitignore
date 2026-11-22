@@ -21,6 +21,8 @@ fixtures/*.live.json
 # --- internal hand-off / review notes (not part of the product; delete a line to publish it)
 HANDOFF.md
 PROJECT_REPORT.md
+HANDOVER.md
+REQUIREMENTS.md
 
 # --- Python
 __pycache__/
@@ -42,3 +44,4 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+FULL_CONTEXT_PROMPT.md

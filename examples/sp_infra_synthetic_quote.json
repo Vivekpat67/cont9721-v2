@@ -1,0 +1,10 @@
+{
+  "_note": "SYNTHETIC test quote for a real firm with a published MoRTH debarment order (2026-10-14, one year). Figures are made up; directors deliberately omitted because no source we hold names them.",
+  "firm_name": "S&P Infrastructure Developers Private Limited",
+  "website": "https://spinfra.in",
+  "work_package": "SYNTHETIC: road widening and drainage works, NH package (test quote)",
+  "contract_value_inr": 120000000,
+  "claimed_years_experience": 25,
+  "city": "New Delhi",
+  "quote_date": "2026-11-22"
+}

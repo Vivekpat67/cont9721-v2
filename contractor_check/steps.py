@@ -604,6 +604,31 @@ def article_id(subject_key: str, url: str) -> str:
     return hashlib.sha1(f"{subject_key}|{url}".encode("utf-8")).hexdigest()[:12]
 
 
+_REDIRECT_PATHS = ("/goto", "/url")
+
+
+def _news_link(url: str) -> dict:
+    """Classify a news result link. Search results can be google.com redirect links whose target is opaque; those
+    are kept exactly as recorded and labelled, never stripped or guessed. A redirect whose url=/q= parameter is a
+    plain URL has that stated destination decoded - it was NOT fetched, so it is labelled as such."""
+    from urllib.parse import parse_qs, urlsplit
+
+    parts = urlsplit(url or "")
+    host = (parts.hostname or "").lower()
+    if not (host == "google.com" or host.endswith(".google.com")) or parts.path not in _REDIRECT_PATHS:
+        return {"kind": "publisher", "label": ""}
+    qs = parse_qs(parts.query)
+    for key in ("url", "q"):
+        for v in qs.get(key, []):
+            t = urlsplit(v)
+            th = (t.hostname or "").lower()
+            if t.scheme in ("http", "https") and th and not (th == "google.com" or th.endswith(".google.com")):
+                return {"kind": "redirect_decoded", "publisher_url": v,
+                        "label": f"[google.com redirect; stated destination {v} - decoded from the link, not fetched]"}
+    return {"kind": "redirect_unverified",
+            "label": "[google.com redirect link: publisher destination not verified (target is encoded; not followed)]"}
+
+
 @step("adverse_news", deps=["parse_quote", "identify_company"])
 def adverse_news(ctx: Ctx) -> Outcome:
     """Crustdata news search per subject; every returned article naming the subject is listed with its link for
@@ -665,7 +690,8 @@ def adverse_news(ctx: Ctx) -> Outcome:
             if tok and tok not in squash((x.get("title") or "") + " " + (x.get("snippet") or "")):
                 other += 1
             articles.append({"id": article_id(s["key"], url), "url": url, "title": x.get("title"),
-                             "snippet": x.get("snippet"), "source": x.get("source"), "position": x.get("position")})
+                             "snippet": x.get("snippet"), "source": x.get("source"), "position": x.get("position"),
+                             "link": _news_link(url)})
         truncated = max(0, len(articles) - per_subject)
         articles = articles[:per_subject]
         state[s["key"]] = {"status": "searched", "query": query, "label": s["label"], "n_results": len(results),
@@ -676,7 +702,8 @@ def adverse_news(ctx: Ctx) -> Outcome:
         for a in articles:
             ctx.ev(f"News result for '{s['label']}' - PENDING MANUAL REVIEW: \"{a['title']}\"", "flag", subject=s["key"],
                    value=a, source_url=a["url"], record_date="publication date not provided by the search API",
-                   note=(a.get("snippet") or "")[:300] + f" [review id {a['id']}]", **cite)
+                   note=(a["link"]["label"] + " " if a["link"]["label"] else "")
+                   + (a.get("snippet") or "")[:300] + f" [review id {a['id']}]", **cite)
         if truncated:
             ctx.ev(f"{truncated} more article(s) naming '{s['label']}' were not listed (cap {per_subject}): coverage incomplete",
                    "flag", subject=s["key"], source_url=_crust_url(ctx, path), record_date=NOT_PROVIDED, **cite)
@@ -767,12 +794,12 @@ def debarment_index(ctx: Ctx) -> Outcome:
     q = ctx.need("parse_quote")
     ident = ctx.out("identify_company") or {}
     st = di.index_status(ctx.cfg, ctx.db)
-    src_note = "; ".join(f"{s}: {v['count']} rows, newest retrieved {v['newest_retrieved_at']}" for s, v in st["sources"].items())
+    src_note, index_src, snap_done = _index_citation(st)
     if not st["ok"]:
         ctx.cant_verify("MoRTH / NHIDCL debarment status",
                         " and ".join(st["problems"]) + ". An empty or stale index is never treated as clean",
-                        source_url="SQLite table debarments", source_field="retrieved_at", fetched_via="index",
-                        record_date=src_note or "no rows", retrieved_at=utcnow_iso())
+                        source_url=index_src, source_field="debarment_snapshots.complete, finished_at",
+                        fetched_via="index", record_date=src_note or "no snapshots", retrieved_at=utcnow_iso())
         return Outcome(status="unverified", output={"index": st}, error="; ".join(st["problems"]))
 
     firm_names = list(dict.fromkeys(x for x in [q.get("firm_name"), (ident.get("basic_info") or {}).get("name")] if x))
@@ -832,10 +859,24 @@ def debarment_index(ctx: Ctx) -> Outcome:
         if not found:
             ctx.ev(f"'{name}' has no match in the MoRTH/NHIDCL debarment index ({st['rows']} rows; {src_note}). "
                    "Covers these two agencies' published lists only.", "verified", subject=key,
-                   source_url="SQLite table debarments (built from morth.gov.in, nhidcl.com)",
-                   source_field="entity_guess, title", record_date=src_note, retrieved_at=utcnow_iso(),
-                   fetched_via="index")
+                   source_url=index_src, source_field="debarment_records.entity_guess, title",
+                   record_date=src_note, retrieved_at=snap_done or utcnow_iso(), fetched_via="index")
     return Outcome(output={"index": st, "results": results})
+
+
+def _index_citation(st: dict) -> tuple[str, str, str | None]:
+    """Cite the snapshots the lookup actually used: id, completeness, record count and crawl completion time."""
+    srcs = st.get("sources") or {}
+    note = "; ".join(f"{s}: snapshot #{v['snapshot_id']} ({'complete' if v.get('complete') else 'INCOMPLETE'}), "
+                     f"{v['count']} records, crawl finished {v.get('finished_at') or v.get('newest_retrieved_at')}"
+                     for s, v in srcs.items())
+    if srcs:
+        label = ("debarment index snapshots " + ", ".join(f"{s} #{v['snapshot_id']}" for s, v in srcs.items())
+                 + " (table debarment_records; crawled from morth.gov.in, nhidcl.com)")
+    else:
+        label = "debarment index (no snapshots)"
+    done = [v.get("finished_at") or v.get("newest_retrieved_at") for v in srcs.values()]
+    return note, label, (min(d for d in done if d) if any(done) else None)
 
 
 def utcnow_iso() -> str:

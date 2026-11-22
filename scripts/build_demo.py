@@ -87,6 +87,8 @@ label{display:grid;gap:4px;font-size:14px;font-weight:500}
 input,textarea{font:16px Inter,sans-serif;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:10px 12px;width:100%}
 textarea{min-height:64px;resize:vertical}
 input:focus,textarea:focus,button:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+input[readonly],textarea[readonly]{background:var(--panel);color:var(--mute);cursor:default}
+.ro{margin:0;font-size:14px;color:var(--mute)}
 .row2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
 .btns{display:flex;flex-wrap:wrap;gap:10px}
 button{font:600 15px Inter,sans-serif;min-height:44px;padding:0 18px;border-radius:6px;border:1px solid var(--ink);background:var(--ink);color:var(--bg);cursor:pointer}
@@ -135,19 +137,18 @@ td .n{display:block;color:var(--mute);font-size:13px;margin-top:2px}
 <div class="notice"><b>Replayed evidence, not live.</b> Every data call below was answered from Crustdata and public-list responses recorded on <span id="rec"></span>. Nothing on this page queries any service. <b>Recommendation for human review, not procurement clearance.</b></div>
 <main class="band"><div class="wrap">
 <h1>Contractor check: quote to case file</h1>
-<p class="lede">Enter a subcontractor's quote. This demo replays one recorded example (a synthetic quote for a real listed firm); live checks run in the command-line tool, where the Crustdata key stays on the server.</p>
+<p class="lede">This page shows one recorded run of a synthetic quote for a real listed firm. Live checks run only in the command-line tool, on the machine that holds the Crustdata key.</p>
 <div class="top">
 <form id="q" novalidate>
-<label for="f_firm">Firm name<input id="f_firm" autocomplete="off"></label>
-<label for="f_web">Website<input id="f_web" autocomplete="off"></label>
-<label for="f_dirs">Directors (one per line, role in brackets)<textarea id="f_dirs"></textarea></label>
-<label for="f_pkg">Work package<input id="f_pkg"></label>
-<div class="row2"><label for="f_val">Contract value (INR)<input id="f_val" inputmode="decimal"></label>
-<label for="f_yrs">Claimed years of experience<input id="f_yrs" inputmode="numeric"></label></div>
-<label for="f_city">City<input id="f_city"></label>
-<div class="btns"><button type="submit" id="go">Build case file</button><button type="button" class="ghost" id="reset">Reset to example</button></div>
-<div class="msg" id="msg"></div>
-<div id="jsonbox" hidden><pre id="json"></pre><div class="btns" style="margin-top:8px"><button type="button" class="ghost" id="copy">Copy JSON</button></div></div>
+<p class="ro">Read-only: these are the recorded run's inputs. This page cannot check a different quote.</p>
+<label for="f_firm">Firm name<input id="f_firm" readonly></label>
+<label for="f_web">Website<input id="f_web" readonly></label>
+<label for="f_dirs">Directors (role in brackets)<textarea id="f_dirs" readonly></textarea></label>
+<label for="f_pkg">Work package<input id="f_pkg" readonly></label>
+<div class="row2"><label for="f_val">Contract value (INR)<input id="f_val" readonly></label>
+<label for="f_yrs">Claimed years of experience<input id="f_yrs" readonly></label></div>
+<label for="f_city">City<input id="f_city" readonly></label>
+<div class="btns"><button type="submit" id="go">Show recorded case file</button></div>
 </form>
 <section class="file" id="file" aria-live="polite">
 <div class="stamp"><div class="seal" id="seal"></div><p id="basis"></p></div>
@@ -169,16 +170,10 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const link = s => { const m = String(s||'').match(/https?:\/\/[^\s)]+/); return m ? esc(s).replace(esc(m[0]), `<a href="${esc(m[0])}" rel="noopener">${esc(m[0])}</a>`) : esc(s); };
 const label = {verified:'verified', flag:'flag', unverified:"can't verify", info:'info'};
 const Q = D.quote;
-const norm = s => String(s||'').toLowerCase().replace(/^https?:\/\//,'').replace(/^www\./,'').replace(/[^a-z0-9]+/g,' ').replace(/\b(private|pvt|limited|ltd|india|the)\b/g,'').trim();
 function fill(){
   $('f_firm').value = Q.firm_name||''; $('f_web').value = Q.website||'';
   $('f_dirs').value = (Q.directors||[]).map(d => d.role ? `${d.name} (${d.role})` : d.name).join('\n');
   $('f_pkg').value = Q.work_package||''; $('f_val').value = Q.contract_value_inr||''; $('f_yrs').value = Q.claimed_years_experience??''; $('f_city').value = Q.city||'';
-}
-function typed(){
-  const dirs = $('f_dirs').value.split('\n').map(s => s.trim()).filter(Boolean).map(s => { const m = s.match(/^(.*?)\s*\((.*)\)\s*$/); return m ? {name:m[1], role:m[2]} : {name:s, role:null}; });
-  const q = {firm_name:$('f_firm').value.trim(), website:$('f_web').value.trim(), directors:dirs, work_package:$('f_pkg').value.trim(), contract_value_inr:Number($('f_val').value)||null, claimed_years_experience:Number($('f_yrs').value)||null, city:$('f_city').value.trim()};
-  return q;
 }
 function renderFile(){
   const seal = $('seal'); seal.textContent = D.verdict; seal.className = 'seal' + (D.verdict === 'APPROVE' ? ' approve' : '');
@@ -189,18 +184,12 @@ function renderFile(){
   $('cost').textContent = D.cost; $('rid').textContent = D.run_id;
   $('rec').textContent = (D.recorded_at.length ? D.recorded_at.map(s => s.replace('T',' ').replace('+00:00',' UTC')).join(', ') : 'unknown');
 }
+// the fields are read-only: the button only shows the recorded result, it never recalculates anything
 $('q').addEventListener('submit', ev => {
   ev.preventDefault();
-  const q = typed(); const msg = $('msg');
-  if (!q.firm_name) { msg.textContent = 'Enter at least the firm name.'; msg.classList.add('on'); return; }
-  const same = norm(q.firm_name) === norm(Q.firm_name) && norm(q.website) === norm(Q.website);
-  $('jsonbox').hidden = same;
-  if (same) { msg.classList.remove('on'); const s = $('seal'); s.classList.add('fresh'); setTimeout(() => s.classList.remove('fresh'), 450); $('file').scrollIntoView({behavior:'smooth', block:'start'}); return; }
-  msg.innerHTML = '<b>No recording for this firm.</b> This demo only replays the recorded example; it makes no live calls. To check this firm, save the JSON below and run <code>contractor-check quote.json</code> where your Crustdata key is configured.';
-  msg.classList.add('on'); $('json').textContent = JSON.stringify(q, null, 2);
+  const s = $('seal'); s.classList.add('fresh'); setTimeout(() => s.classList.remove('fresh'), 450);
+  $('file').scrollIntoView({behavior:'smooth', block:'start'});
 });
-$('reset').addEventListener('click', () => { fill(); $('msg').classList.remove('on'); $('jsonbox').hidden = true; });
-$('copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('json').textContent); $('copy').textContent = 'Copied'; } catch (e) { $('copy').textContent = 'Select the text to copy'; } });
 fill(); renderFile();
 }
 </script>

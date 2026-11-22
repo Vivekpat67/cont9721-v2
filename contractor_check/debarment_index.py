@@ -233,7 +233,7 @@ def index_status(cfg: dict, db: DB, now: datetime | None = None) -> dict:
         if now - finished > max_age:
             problems.append(f"{src} index is {(now - finished).days} days old (limit {max_age.days})")
     sources = {src: {"count": s["records"], "newest_retrieved_at": s["finished_at"], "snapshot_id": s["snapshot_id"],
-                     "complete": bool(s["complete"])} for src, s in latest.items()}
+                     "finished_at": s["finished_at"], "complete": bool(s["complete"])} for src, s in latest.items()}
     return {"ok": not problems, "problems": problems, "sources": sources,
             "rows": sum(v["count"] for v in sources.values())}
 
