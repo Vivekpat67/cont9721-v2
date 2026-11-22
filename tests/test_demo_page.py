@@ -13,6 +13,7 @@ from contractor_check import cli
 from contractor_check.db import DB
 from contractor_check.gateway import Gateway
 from contractor_check.pipeline import Ctx, run_pipeline
+from test_debarment_index import ACTIVE, filler
 from test_offline import QUOTE_JSON, Clock, Crust, make, seed_index, verdict
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -28,7 +29,7 @@ def _build_demo():
     return mod
 
 
-def _replay_run(tmp_path):
+def _replay_run(tmp_path, index_rows=None):
     """A normal (mocked) run, exported and replayed into a second DB - the same path the real demo uses."""
     crust = Crust()
     crust.news = {"Ahluwalia Contracts": NEWS}
@@ -37,7 +38,7 @@ def _replay_run(tmp_path):
     fixture = cli.export_replay(ctx.db, ctx.run_id)
     db_path = tmp_path / "replay.db"
     db2 = DB(db_path)
-    seed_index(db2)
+    seed_index(db2, rows=index_rows)
     rid = db2.create_run(QUOTE_JSON, "json", 25.0, 900)
     gw = Gateway(ctx.cfg, db2, rid, credit_cap=25.0, deadline_seconds=900, replay=fixture, clock=Clock())
     cfg2 = {**ctx.cfg, "paths": {**ctx.cfg["paths"], "case_files": str(tmp_path / "cf2")}}
@@ -94,3 +95,24 @@ def test_non_replay_run_is_refused(tmp_path, monkeypatch):
     run_pipeline(ctx, **QUIET)
     rc, html = _render(monkeypatch, tmp_path, tmp_path / "t.db", ctx.run_id)
     assert rc == 2 and html == ""
+
+
+def test_reject_pending_is_shown_not_hidden_behind_hold(tmp_path, monkeypatch):
+    ctx, db_path = _replay_run(tmp_path, index_rows=filler() + [ACTIVE])
+    assert ctx.out("verdict")["verdict"] == "REJECT"                   # rules propose REJECT ...
+    rc, html = _render(monkeypatch, tmp_path, db_path, ctx.run_id)
+    d = _data(html)
+    assert rc == 0 and d["verdict"] == "HOLD"                          # ... but no person approved it
+    s = d["summary"]
+    assert s["reject_pending"] is True and s["reject_approved"] is False and s["rules_verdict"] == "REJECT"
+    assert s["reject_reasons"] >= 1 and s["reject_reasons"] + s["hold_reasons"] == len(d["reasons"])
+    assert any(r["code"] == "debarment_active" and r["severity"] == "reject" for r in d["reasons"])
+    assert 'Rules recommend <b class="rej">REJECT</b>' in html and "awaiting a person's approval" in html
+
+
+def test_plain_hold_run_has_no_reject_summary(tmp_path, monkeypatch):
+    ctx, db_path = _replay_run(tmp_path)
+    _, html = _render(monkeypatch, tmp_path, db_path, ctx.run_id)
+    s = _data(html)["summary"]
+    assert s == {"reject_reasons": 0, "hold_reasons": len(_data(html)["reasons"]), "rules_verdict": "HOLD",
+                 "reject_pending": False, "reject_approved": False}

@@ -49,8 +49,15 @@ def payload(db: DB, cfg: dict, run_id: str) -> dict:
                           "source": e["source_url"] or "", "field": e["source_field"] or "",
                           "record_date": e["record_date"] or "", "via": e["fetched_via"] or "",
                           "retrieved": e["retrieved_at"] or ""} for e in items]})
+    reasons = v.get("reasons") or []
+    n_reject = sum(1 for r in reasons if r.get("severity") == "reject")
+    # the final verdict can be HOLD while the rules propose REJECT (no human approval yet): say so, never hide it
+    summary = {"reject_reasons": n_reject, "hold_reasons": len(reasons) - n_reject,
+               "rules_verdict": v.get("verdict"),
+               "reject_pending": v.get("verdict") == "REJECT" and verdict != "REJECT",
+               "reject_approved": v.get("verdict") == "REJECT" and verdict == "REJECT"}
     return {"run_id": run_id, "created": run["created_at"], "quote": json.loads(run["input_raw"]),
-            "verdict": verdict, "basis": basis, "reasons": v.get("reasons") or [], "checks": checks,
+            "verdict": verdict, "basis": basis, "reasons": reasons, "summary": summary, "checks": checks,
             "recorded_at": recorded, "replayed_calls": len(replayed),
             "cost": report.format_cost(report.cost_summary(ctx))}
 
@@ -117,6 +124,8 @@ pre{background:var(--panel);border:1px solid var(--line);border-radius:6px;paddi
 .reasons{list-style:none;padding:0;margin:0;display:grid;gap:8px}
 .reasons li{border-left:3px solid var(--hold);padding:6px 12px;background:var(--panel)}
 .reasons code{font-size:13px;color:var(--hold)}
+.reasons li.reject{border-left-width:6px}
+.rej{color:var(--hold);letter-spacing:.04em}
 .sec{border-top:1px solid var(--line);padding-top:8px}
 .scroll{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:14px}
@@ -177,9 +186,15 @@ function fill(){
 }
 function renderFile(){
   const seal = $('seal'); seal.textContent = D.verdict; seal.className = 'seal' + (D.verdict === 'APPROVE' ? ' approve' : '');
-  $('basis').innerHTML = `<b>Recommendation for human review</b>, not procurement clearance. ${esc(D.reasons.length)} reason(s) to hold, each needing a person's decision.`;
+  const S = D.summary;
+  let b = '<b>Recommendation for human review</b>, not procurement clearance. ';
+  if (S.reject_pending) b += `Rules recommend <b class="rej">REJECT</b> (${esc(S.reject_reasons)} reason(s)), awaiting a person's approval; it stays ${esc(D.verdict)} until then.` + (S.hold_reasons ? ` ${esc(S.hold_reasons)} other reason(s) need review.` : '');
+  else if (S.reject_approved) b += `REJECT approved by a person (${esc(D.basis)}).` + (S.hold_reasons ? ` ${esc(S.hold_reasons)} other reason(s) were also noted.` : '');
+  else if (D.reasons.length) b += `${esc(D.reasons.length)} reason(s) to hold, each needing a person's decision.`;
+  else b += 'No blockers found; a person must still decide.';
+  $('basis').innerHTML = b;
   $('ledger').innerHTML = D.checks.map(c => `<div class="lrow"><a href="#c-${c.id}">${esc(c.title)} <span class="chip ${c.status.replace(' ','-')}">${esc(c.status === 'done' ? 'ran' : c.status)}</span></a><span class="ticks">${c.evidence.filter(e => e.subject !== 'quote' || c.id === 'parse_quote').map(e => `<i class="tk ${e.status}" title="${esc(label[e.status]||e.status)}: ${esc(e.claim)}"></i>`).join('')}</span></div>`).join('');
-  $('reasons').innerHTML = D.reasons.length ? D.reasons.map(r => `<li><code>${esc(r.code)}</code> ${link(r.message)}</li>`).join('') : '<li>No blockers found. This is not clearance; a person must still decide.</li>';
+  $('reasons').innerHTML = D.reasons.length ? D.reasons.map(r => `<li class="${esc(r.severity)}">${r.severity === 'reject' && (S.reject_pending || S.reject_approved) ? `<b class="rej">REJECT${S.reject_pending ? ' proposed' : ''}</b> ` : ''}<code>${esc(r.code)}</code> ${link(r.message)}</li>`).join('') : '<li>No blockers found. This is not clearance; a person must still decide.</li>';
   $('evidence').innerHTML = D.checks.map(c => `<div class="sec" id="c-${c.id}"><h3>${esc(c.title)} <span class="chip ${c.status.replace(' ','-')}">${esc(c.status === 'done' ? 'ran' : c.status)}</span></h3>${c.error ? `<p class="err">${esc(c.error)}</p>` : ''}${c.evidence.length ? `<div class="scroll"><table class="stack"><thead><tr><th>Finding</th><th>Status</th><th>Source</th><th>Record date</th><th>Via</th><th>Retrieved</th></tr></thead><tbody>${c.evidence.map(e => `<tr><td class="f">${link(e.claim)}${e.note ? `<span class="n">${link(e.note)}</span>` : ''}</td><td><span class="st ${e.status}">${esc(label[e.status]||e.status)}</span></td><td>${link(e.source)}${e.field ? `<span class="n">${esc(e.field)}</span>` : ''}</td><td>${esc(e.record_date)}</td><td><span class="via ${esc(e.via)}">${esc(e.via)}</span></td><td>${esc(e.retrieved.replace('T',' ').replace('+00:00',' UTC'))}</td></tr>`).join('')}</tbody></table></div>` : '<p class="foot">No evidence recorded.</p>'}</div>`).join('');
   $('cost').textContent = D.cost; $('rid').textContent = D.run_id;
   $('rec').textContent = (D.recorded_at.length ? D.recorded_at.map(s => s.replace('T',' ').replace('+00:00',' UTC')).join(', ') : 'unknown');
