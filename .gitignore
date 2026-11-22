@@ -46,3 +46,8 @@ htmlcov/
 .DS_Store
 Thumbs.db
 FULL_CONTEXT_PROMPT.md
+site_build/
+viewer_build/
+ledger.jsonl
+decisions.jsonl
+*.before_merge.db

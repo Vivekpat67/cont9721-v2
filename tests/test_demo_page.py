@@ -116,3 +116,33 @@ def test_plain_hold_run_has_no_reject_summary(tmp_path, monkeypatch):
     s = _data(html)["summary"]
     assert s == {"reject_reasons": 0, "hold_reasons": len(_data(html)["reasons"]), "rules_verdict": "HOLD",
                  "reject_pending": False, "reject_approved": False}
+
+
+def test_demo_page_follows_owner_style_rules(tmp_path, monkeypatch):
+    """Same rules as the case viewer: system font, no web fonts, no gradients/glow/rounded pills/emoji,
+    nothing centred, one button, spacing on a 4px grid."""
+    ctx, db_path = _replay_run(tmp_path, index_rows=filler() + [ACTIVE])
+    _, html = _render(monkeypatch, tmp_path, db_path, ctx.run_id)
+    css = re.search(r"<style>(.*?)</style>", html, re.S).group(1)
+    head = html.split('<script id="data"')[0]
+    assert "<h1>Contractor check: one recorded case file</h1>" in html
+    assert html.count("<button") == 1
+    assert "googleapis" not in head and "gstatic" not in head and "Inter" not in css and "Spectral" not in css
+    for bad in ("gradient", "text-shadow", "box-shadow", "filter:", "blur", "border-radius", "rotate", "clamp(", "vw"):
+        assert bad not in css, bad
+    assert "text-align:center" not in css.replace(" ", "")
+    assert 'class="chip' not in html
+    assert not re.search("[\U0001F300-\U0001FAFF\u2600-\u27BF]", html)
+    for prop, vals in re.findall(r"(?:^|[;{])\s*((?:margin|padding|gap)[a-z-]*)\s*:\s*([^;}]+)", css):
+        for px in re.findall(r"(\d+)px", vals):
+            assert int(px) % 4 == 0, f"{prop}: {vals} is off the 4px grid"
+
+
+
+def test_demo_page_puts_nothing_in_a_box(tmp_path, monkeypatch):
+    from test_site import assert_no_boxes
+    ctx, db_path = _replay_run(tmp_path)
+    _, html = _render(monkeypatch, tmp_path, db_path, ctx.run_id)
+    css = re.search(r"<style>(.*?)</style>", html, re.S).group(1)
+    assert_no_boxes(css, {"body", "button", "a"})
+    assert 'class="tk' not in html and 'class="key"' not in html

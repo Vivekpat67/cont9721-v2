@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+server = ["fastapi>=0.110", "uvicorn>=0.29"]
 
 [project.scripts]
 contractor-check = "contractor_check.cli:main"
