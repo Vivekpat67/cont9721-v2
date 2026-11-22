@@ -64,7 +64,7 @@ def payload(db: DB, cfg: dict, run_id: str) -> dict:
 
 PAGE = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Contractor Check Demo</title>
+<title>__TITLE__</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -217,6 +217,7 @@ def main() -> int:
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--db", default=str(ROOT / "contractor_check.db"))
     ap.add_argument("--out", default=str(ROOT / "demo_build" / "index.html"))
+    ap.add_argument("--title", default="Contractor Check Demo", help="browser-tab title (two to four words)")
     a = ap.parse_args()
     db = DB(a.db)
     data = payload(db, load_config(), a.run_id)
@@ -225,7 +226,9 @@ def main() -> int:
         return 2
     blob = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(a.out).write_text(PAGE.replace("__DATA__", blob), encoding="utf-8")
+    import html as _html
+
+    Path(a.out).write_text(PAGE.replace("__TITLE__", _html.escape(a.title)).replace("__DATA__", blob), encoding="utf-8")
     print(f"wrote {a.out} ({len(blob) // 1024} KB data, {data['replayed_calls']} replayed calls, verdict {data['verdict']})")
     return 0
 
